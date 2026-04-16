@@ -713,6 +713,10 @@
       const MAP_CENTER = new THREE.Vector3(0, 0, 0);
       const MIGRATION_THRESHOLD = 10;
 
+      let largeObstacles = [];
+      let karCameraOffset = 0;
+      const KAR_EDGE_THRESHOLD = 0.15;
+
       // AGACHAR E RECUO
       let isCrouching = false;
       const CROUCH_SPEED_MULTIPLIER = 0.5;
@@ -1090,7 +1094,10 @@
 
           const playPromise = menuMusic.play();
 
-          if (playPromise !== undefined) {
+          if (
+            playPromise !== undefined &&
+            typeof playPromise.catch === "function"
+          ) {
             playPromise.catch((error) => {
               console.log("Autoplay bloqueado, aguardando interação...");
               document.addEventListener(
@@ -1686,6 +1693,8 @@
         inventorySlots = BASE_SLOTS;
         inventoryItems = [];
 
+        mouseWorldPos.set(0, 0, 100);
+
         initAudio(); // Garante a inicialização caso tenha contornado pela tela inicial
 
         scene = new THREE.Scene();
@@ -1946,6 +1955,55 @@
         lootItems.push(lootObj);
       }
 
+      function spawnLoot(x, z) {
+        if (isOnRoad(x, z)) return;
+
+        for (const c of colliders) {
+          if (
+            x > c.minX - 1 &&
+            x < c.maxX + 1 &&
+            z > c.minZ - 1 &&
+            z < c.maxZ + 1
+          ) {
+            return;
+          }
+        }
+
+        // Usar a lootTable existente (já configurada corretamente)
+        const roll = Math.random();
+        let accumulated = 0;
+        let selectedType = null;
+
+        for (const loot of lootTable) {
+          accumulated += loot.chance;
+          if (roll < accumulated) {
+            selectedType = loot;
+            break;
+          }
+        }
+
+        if (!selectedType) return;
+
+        const config = itemConfigs[selectedType.type];
+        if (!config) return;
+
+        const lootObj = new THREE.Mesh(
+          new THREE.BoxGeometry(0.7, 0.3, 0.7),
+          new THREE.MeshStandardMaterial({ color: config.color }),
+        );
+        lootObj.position.set(x, 0.3, z);
+        lootObj.userData = {
+          type: selectedType.type,
+          amount: selectedType.amount,
+          name: config.name,
+          icon: config.icon,
+          floatOffset: Math.random() * 10,
+        };
+
+        scene.add(lootObj);
+        lootItems.push(lootObj);
+      }
+
       function spawnAmmoBoxes() {
         // Adicionar caixas de munição em locais estratégicos
         const ammoPositions = [
@@ -2093,19 +2151,17 @@
               createStreetLight(x + 50, z + 50);
             }
 
+            // LOOT CORRETO (comida, água, munição, curativos)
             if (Math.random() > 0.4) {
-              spawnBackpackLoot(
-                x + 15,
-                z + 20,
-                Math.random() > 0.5 ? "normal" : "travel",
+              spawnLoot(
+                x + 15 + (Math.random() - 0.5) * 20,
+                z + 20 + (Math.random() - 0.5) * 20,
               );
             }
-
             if (Math.random() > 0.4) {
-              spawnBackpackLoot(
-                x - 20,
-                z - 15,
-                Math.random() > 0.5 ? "normal" : "travel",
+              spawnLoot(
+                x - 20 + (Math.random() - 0.5) * 20,
+                z - 15 + (Math.random() - 0.5) * 20,
               );
             }
           }
@@ -2156,6 +2212,10 @@
           maxZ: z + d / 2,
         });
         window.obstacles.push({
+          position: new THREE.Vector3(x, 0, z),
+          radius: Math.max(w, d) / 2 + 2,
+        });
+        largeObstacles.push({
           position: new THREE.Vector3(x, 0, z),
           radius: Math.max(w, d) / 2 + 2,
         });
@@ -2263,6 +2323,10 @@
           minZ: z - 15,
           maxZ: z + 15,
         });
+        largeObstacles.push({
+          position: new THREE.Vector3(x, 0, z),
+          radius: 18,
+        });
       }
 
       function createGasStation(x, z) {
@@ -2324,6 +2388,10 @@
           minZ: z - 20,
           maxZ: z + 20,
         });
+        largeObstacles.push({
+          position: new THREE.Vector3(x, 0, z),
+          radius: 28,
+        });
       }
 
       function createTree(x, z) {
@@ -2354,6 +2422,10 @@
         window.obstacles.push({
           position: new THREE.Vector3(x, 0, z),
           radius: 2.0,
+        });
+        largeObstacles.push({
+          position: new THREE.Vector3(x, 0, z),
+          radius: 2.5,
         });
       }
 
@@ -2438,6 +2510,10 @@
           maxX: x + 0.8,
           minZ: z - 0.8,
           maxZ: z + 0.8,
+        });
+        largeObstacles.push({
+          position: new THREE.Vector3(x, 0, z),
+          radius: 1.2,
         });
       }
 
@@ -3374,45 +3450,54 @@
       }
 
       function createFOVLines() {
-        const m = new THREE.LineBasicMaterial({ color: 0xff4444 });
-        const h = visionConeAngle / 2;
-        const l = new THREE.BufferGeometry().setFromPoints([
-          new THREE.Vector3(0, 1.5, 0),
-          new THREE.Vector3().setFromSphericalCoords(
-            visionConeRange,
-            Math.PI / 2,
-            h,
-          ),
-        ]);
-        const r = new THREE.BufferGeometry().setFromPoints([
-          new THREE.Vector3(0, 1.5, 0),
-          new THREE.Vector3().setFromSphericalCoords(
-            visionConeRange,
-            Math.PI / 2,
-            -h,
-          ),
-        ]);
-        fovLines = [new THREE.Line(l, m), new THREE.Line(r, m)];
-        scene.add(fovLines[0]);
-        scene.add(fovLines[1]);
+        if (fovLines.length > 0) {
+          fovLines.forEach((line) => scene.remove(line));
+          fovLines = [];
+        }
+
+        const material = new THREE.LineBasicMaterial({ color: 0xff4444 });
+
+        const leftGeometry = new THREE.BufferGeometry();
+        const rightGeometry = new THREE.BufferGeometry();
+
+        const leftLine = new THREE.Line(leftGeometry, material);
+        const rightLine = new THREE.Line(rightGeometry, material);
+
+        scene.add(leftLine);
+        scene.add(rightLine);
+
+        fovLines = [leftLine, rightLine];
       }
+
       function updateFOVLines() {
-        if (!fovLines.length) return;
-        const h = visionConeAngle / 2;
-        fovLines[0].geometry.setFromPoints([
-          new THREE.Vector3(0, 1.5, 0).add(player.position),
-          new THREE.Vector3()
-            .setFromSphericalCoords(visionConeRange, Math.PI / 2, h)
-            .applyQuaternion(player.quaternion)
-            .add(player.position),
-        ]);
-        fovLines[1].geometry.setFromPoints([
-          new THREE.Vector3(0, 1.5, 0).add(player.position),
-          new THREE.Vector3()
-            .setFromSphericalCoords(visionConeRange, Math.PI / 2, -h)
-            .applyQuaternion(player.quaternion)
-            .add(player.position),
-        ]);
+        if (!fovLines.length || !player) return;
+
+        const halfAngle = visionConeAngle / 2;
+        const playerPos = player.position.clone();
+        playerPos.y = 1.5; // Altura dos olhos
+
+        // Direção do player
+        const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(
+          player.quaternion,
+        );
+
+        // Ponto final da linha esquerda
+        const leftEnd = forward
+          .clone()
+          .applyAxisAngle(new THREE.Vector3(0, 1, 0), halfAngle)
+          .multiplyScalar(visionConeRange)
+          .add(playerPos);
+
+        // Ponto final da linha direita
+        const rightEnd = forward
+          .clone()
+          .applyAxisAngle(new THREE.Vector3(0, 1, 0), -halfAngle)
+          .multiplyScalar(visionConeRange)
+          .add(playerPos);
+
+        // Atualizar geometrias
+        fovLines[0].geometry.setFromPoints([playerPos, leftEnd]);
+        fovLines[1].geometry.setFromPoints([playerPos, rightEnd]);
       }
 
       function isObjectVisible(o) {
@@ -3713,12 +3798,14 @@
               .addScaledVector(moveDir, speed * delta);
             if (!checkCollision(next)) player.position.copy(next);
 
-            if (!isAiming)
-              player.rotation.y = THREE.MathUtils.lerp(
-                player.rotation.y,
-                Math.atan2(moveDir.x, moveDir.z),
-                0.12,
-              );
+            if (!isAiming) {
+              const targetAngle = Math.atan2(moveDir.x, moveDir.z);
+              let currentAngle = player.rotation.y;
+              let angleDiff = targetAngle - currentAngle;
+              while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+              while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+              player.rotation.y += angleDiff * 0.12;
+            }
             player.userData.animSpeed = THREE.MathUtils.lerp(
               player.userData.animSpeed,
               run ? 1.4 : 0.9,
@@ -3760,14 +3847,15 @@
           raycaster.setFromCamera(mouse, camera);
           if (raycaster.ray.intersectPlane(plane, mouseWorldPos)) {
             if (isAiming) {
-              player.rotation.y = THREE.MathUtils.lerp(
-                player.rotation.y,
-                Math.atan2(
-                  mouseWorldPos.x - player.position.x,
-                  mouseWorldPos.z - player.position.z,
-                ),
-                0.18,
+              const targetAngle = Math.atan2(
+                mouseWorldPos.x - player.position.x,
+                mouseWorldPos.z - player.position.z,
               );
+              let currentAngle = player.rotation.y;
+              let angleDiff = targetAngle - currentAngle;
+              while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+              while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+              player.rotation.y += angleDiff * 0.18;
 
               let visualChance = BASE_HIT_CHANCE;
               if (isMovingWhileShooting) visualChance *= 0.65;
@@ -3990,7 +4078,7 @@
                 let moveDir = toTarget.normalize();
 
                 // Verificar múltiplos ângulos para desvio
-                const checkAngles = [0, 30, -30, 60, -60, 90, -90];
+                const checkAngles = [0, 30, -30, 60, -60];
                 let bestDir = null;
                 let bestDist = 0;
 
@@ -4000,25 +4088,24 @@
                     .clone()
                     .applyAxisAngle(new THREE.Vector3(0, 1, 0), angleRad);
 
-                  raycaster.set(
-                    z.position.clone().add(new THREE.Vector3(0, 1.5, 0)),
-                    testDir,
-                  );
-                  const hits = raycaster.intersectObjects(
-                    scene.children.filter(
-                      (o) =>
-                        o.isMesh &&
-                        o !== player &&
-                        o !== z &&
-                        !zombies.includes(o),
-                    ),
-                  );
+                  // Verificar apenas obstáculos GRANDES
+                  let freeDist = 10; // Distância padrão se não houver obstáculo
 
-                  const freeDist = hits.length > 0 ? hits[0].distance : 10;
+                  for (const obs of largeObstacles) {
+                    const obsDist = z.position.distanceTo(obs.position);
+                    if (obsDist < obs.radius + 3) {
+                      // Calcular distância livre na direção testDir
+                      const toObs = obs.position.clone().sub(z.position);
+                      const projDist = toObs.dot(testDir);
+                      if (projDist > 0 && projDist < freeDist) {
+                        freeDist = projDist;
+                      }
+                    }
+                  }
 
                   // Penalizar ângulos muito diferentes do alvo
                   const anglePenalty = Math.abs(angleDeg) / 180;
-                  const score = freeDist - anglePenalty * 2;
+                  const score = freeDist - anglePenalty * 1.5;
 
                   if (score > bestDist) {
                     bestDist = score;
@@ -4151,41 +4238,54 @@
         if (isAiming && player.userData.currentWeapon === "kar98k") {
           visionConeAngle = (Math.PI * 60) / 180;
           visionConeRange = 600;
-          const distToMouse = mouseWorldPos.distanceTo(player.position);
 
-          if (distToMouse > 150) {
-            // Mantém o offset isométrico original
-            const cameraOffset = new THREE.Vector3(120, 120, 120);
-            const targetCameraPos = mouseWorldPos.clone().add(cameraOffset);
-            targetCameraPos.y += shotRecoil * 0.15;
-            targetCameraPos.x -= shotRecoil * 0.05;
+          // Calcular posição do mouse em coordenadas normalizadas (-1 a 1)
+          const mouseX = mouse.x;
+          const mouseY = mouse.y;
 
-            camera.position.lerp(targetCameraPos, 0.08);
-            camera.lookAt(mouseWorldPos);
-            currentLookAt.copy(mouseWorldPos);
-          } else {
-            currentLookAt.lerp(
-              new THREE.Vector3().lerpVectors(
-                player.position,
-                mouseWorldPos,
-                0.3,
-              ),
-              0.08,
-            );
-            const targetPos = currentLookAt
-              .clone()
-              .add(
-                new THREE.Vector3(
-                  120,
-                  120 + shotRecoil * 0.15,
-                  120 + shotRecoil * 0.25,
-                ),
-              );
-            targetPos.x -= shotRecoil * 0.05;
-            camera.position.lerp(targetPos, 0.1);
-            camera.lookAt(currentLookAt);
-          }
+          // Verificar se o cursor está próximo das bordas
+          const distToEdgeX = 1 - Math.abs(mouseX);
+          const distToEdgeY = 1 - Math.abs(mouseY);
+          const nearEdge =
+            distToEdgeX < KAR_EDGE_THRESHOLD ||
+            distToEdgeY < KAR_EDGE_THRESHOLD;
+
+          // Ajustar suavemente o offset da câmera
+          const targetOffset = nearEdge ? 1.0 : 0.0;
+          karCameraOffset = THREE.MathUtils.lerp(
+            karCameraOffset,
+            targetOffset,
+            0.05,
+          );
+
+          // Posição base da câmera (isométrica padrão)
+          const baseCameraPos = player.position
+            .clone()
+            .add(new THREE.Vector3(120, 120, 120));
+
+          // Posição focada na mira
+          const focusCameraPos = mouseWorldPos
+            .clone()
+            .add(new THREE.Vector3(120, 120, 120));
+
+          // Interpolar entre as duas posições
+          const targetCameraPos = baseCameraPos.lerp(
+            focusCameraPos,
+            karCameraOffset,
+          );
+
+          // Aplicar posição da câmera
+          camera.position.lerp(targetCameraPos, 0.08);
+
+          // LookAt: interpolar entre player e mira
+          const lookTarget = player.position
+            .clone()
+            .lerp(mouseWorldPos, karCameraOffset);
+          camera.lookAt(lookTarget);
+          currentLookAt.copy(lookTarget);
         } else {
+          // Resetar offset quando não estiver com Kar98k
+          karCameraOffset = 0;
           visionConeAngle = (Math.PI * 120) / 180;
           visionConeRange = 300;
 
